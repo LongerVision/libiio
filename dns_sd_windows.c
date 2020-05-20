@@ -90,6 +90,7 @@ open_client_sockets(int* sockets, int max_sockets) {
 					}
 				}
 			}
+#ifdef HAVE_IPV6
 			else if (unicast->Address.lpSockaddr->sa_family == AF_INET6) {
 				struct sockaddr_in6* saddr = (struct sockaddr_in6*)unicast->Address.lpSockaddr;
 				static const unsigned char localhost[] = { 0, 0, 0, 0, 0, 0, 0, 0,
@@ -107,6 +108,7 @@ open_client_sockets(int* sockets, int max_sockets) {
 					}
 				}
 			}
+#endif
 		}
 	}
 
