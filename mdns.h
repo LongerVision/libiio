@@ -1,4 +1,5 @@
-/* mdns.h  -  mDNS/DNS-SD library  -  Public Domain  -  2017 Mattias Jansson
+/* https://github.com/mjansson/mdns/blob/9744d37b4d9d1e5b97acf57c333d224d1a85acbe/mdns.h
+ * mdns.h  -  mDNS/DNS-SD library  -  Public Domain  -  2017 Mattias Jansson
  *
  * This library provides a cross-platform mDNS and DNS-SD library in C.
  * The implementation is based on RFC 6762 and RFC 6763.

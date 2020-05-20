@@ -1,22 +1,32 @@
-// Based on the example provided here: https://github.com/mjansson/mdns
-
-#ifdef _WIN32
-#  define _CRT_SECURE_NO_WARNINGS 1
-#endif
+/*
+ * libiio - Library for interfacing industrial I/O (IIO) devices
+ *
+ * Copyright (C) 2014-2020 Analog Devices, Inc.
+ * Author: Adrian Suciu <adrian.suciu@analog.com>
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * Based on https://github.com/mjansson/mdns/blob/ce2e4f789f06429008925ff8f18c22036e60201e/mdns.c
+ * which is Licensed under Public Domain
+ */
 
 #include <stdio.h>
 #include <errno.h>
+#include <winsock2.h>
+#include <iphlpapi.h>
+
 #include "iio-private.h"
 #include "mdns.h"
 #include "network.h"
 #include "debug.h"
-
-#ifdef _WIN32
-#  include <iphlpapi.h>
-#else
-#  include <netdb.h>
-#endif
-
 
 static int new_discovery_data(struct dns_sd_discovery_data** data)
 {
@@ -42,13 +52,15 @@ open_client_sockets(int* sockets, int max_sockets) {
 	// Thus we need to open one socket for each interface and address family
 	int num_sockets = 0;
 
-#ifdef _WIN32
 	IP_ADAPTER_ADDRESSES* adapter_address = 0;
 	ULONG address_size = 8000;
 	unsigned int ret;
 	unsigned int num_retries = 4;
 	do {
 		adapter_address = malloc(address_size);
+		if (adapter_address == NULL) {
+			return -ENOMEM;
+		}
 		ret = GetAdaptersAddresses(AF_UNSPEC, GAA_FLAG_SKIP_MULTICAST | GAA_FLAG_SKIP_ANYCAST, 0,
 			adapter_address, &address_size);
 		if (ret == ERROR_BUFFER_OVERFLOW) {
@@ -66,8 +78,6 @@ open_client_sockets(int* sockets, int max_sockets) {
 		return num_sockets;
 	}
 
-	/*int first_ipv4 = 1;
-	int first_ipv6 = 1;*/
 	for (PIP_ADAPTER_ADDRESSES adapter = adapter_address; adapter; adapter = adapter->Next) {
 		if (adapter->TunnelType == TUNNEL_TYPE_TEREDO)
 			continue;
@@ -113,16 +123,10 @@ open_client_sockets(int* sockets, int max_sockets) {
 	}
 
 	free(adapter_address);
-#endif
 
 	for (int isock = 0; isock < num_sockets; ++isock) {
-#ifdef _WIN32
 		unsigned long param = 1;
 		ioctlsocket(sockets[isock], FIONBIO, &param);
-#else
-		const int flags = fcntl(sockets[isock], F_GETFL, 0);
-		fcntl(sockets[isock], F_SETFL, flags | O_NONBLOCK);
-#endif
 	}
 
 	return num_sockets;
@@ -135,7 +139,6 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen,
 	uint16_t rtype, uint16_t rclass, uint32_t ttl,
 	const void* data, size_t size, size_t offset, size_t length,
 	void* user_data) {
-
 
 	char addrbuffer[64];
 	char servicebuffer[64];
@@ -167,10 +170,12 @@ query_callback(int sock, const struct sockaddr* from, size_t addrlen,
 	if (srv.name.length > 1)
 	{
 		dd->hostname = malloc(srv.name.length);
-		strncpy(dd->hostname, srv.name.str, srv.name.length);
-		dd->hostname[srv.name.length - 1] = 0;
+		if (dd->hostname == NULL) {
+			return -ENOMEM;
+		}
+		iio_strlcpy(dd->hostname, srv.name.str, srv.name.length);
 	}
-	strcpy(dd->addr_str, addrbuffer);
+	iio_strlcpy(dd->addr_str, addrbuffer, DNS_SD_ADDRESS_STR_MAX);
 	dd->port = srv.port;
 
 	IIO_DEBUG("DNS SD: added %s (%s:%d)\n", dd->hostname, dd->addr_str, dd->port);
@@ -185,20 +190,13 @@ quit:
 
 int dnssd_find_hosts(struct dns_sd_discovery_data** ddata)
 {
-#ifdef _WIN32
-	const char* hostname = "dummy-host";
+
 	WORD versionWanted = MAKEWORD(1, 1);
 	WSADATA wsaData;
 	if (WSAStartup(versionWanted, &wsaData)) {
 		printf("Failed to initialize WinSock\n");
 		return -1;
 	}
-
-	char hostname_buffer[128];
-	DWORD hostname_size = (DWORD)sizeof(hostname_buffer);
-	if (GetComputerNameA(hostname_buffer, &hostname_size))
-		hostname = hostname_buffer;
-#endif
 
 	struct dns_sd_discovery_data* d;
 
@@ -211,7 +209,10 @@ int dnssd_find_hosts(struct dns_sd_discovery_data** ddata)
 
 	size_t capacity = 2048;
 	void* buffer = malloc(capacity);
-	const char service[] = "_iio._tcp.local.";
+	if (buffer == NULL) {
+		return -ENOMEM;
+	}
+	const char service[] = "_iio._tcp.local";
 
 	IIO_DEBUG("Sending DNS-SD discovery\n");
 
@@ -226,7 +227,7 @@ int dnssd_find_hosts(struct dns_sd_discovery_data** ddata)
 
 	IIO_DEBUG("Sending mDNS query: %s\n", service);
 	for (int isock = 0; isock < num_sockets; ++isock) {
-		transaction_id[isock] = mdns_query_send(sockets[isock], MDNS_RECORDTYPE_PTR, service, strlen(service), buffer,
+		transaction_id[isock] = mdns_query_send(sockets[isock], MDNS_RECORDTYPE_PTR, service, sizeof(service)-1, buffer,
 			capacity);
 		if (transaction_id[isock] <= 0)
 			IIO_ERROR("Failed to send mDNS query: %s\n", strerror(errno));
@@ -256,9 +257,7 @@ int dnssd_find_hosts(struct dns_sd_discovery_data** ddata)
 		mdns_socket_close(sockets[isock]);
 	IIO_DEBUG("Closed socket%s\n", num_sockets ? "s" : "");
 
-#ifdef _WIN32
 	WSACleanup();
-#endif
 
 	return 0;
 }
